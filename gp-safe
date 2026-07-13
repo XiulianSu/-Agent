@@ -199,11 +199,24 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
   exit 0
 fi
 
-if git -C "$WORKDIR" push -u origin "$PUSH_BRANCH"; then
+PUSH_URL="$REMOTE_URL"
+PUSH_EXTRA=()
+if [[ "$AUTH_MODE" == "https" ]]; then
+  PUSH_URL="$(to_ssh_url "$REMOTE_URL")"
+  # 部分机器全局配置了 url.https://github.com/.insteadof git@github.com:
+  # 会强制把 SSH 改回 HTTPS，推送时需临时禁用
+  if git config --global --get-regexp '^url\..*\.insteadof' 2>/dev/null | grep -q 'git@github.com:'; then
+    PUSH_EXTRA=(-c 'url.https://github.com/.insteadof=')
+    info "检测到全局 HTTPS 重写规则，将用 SSH 直连推送"
+  fi
+fi
+
+if git -C "$WORKDIR" "${PUSH_EXTRA[@]}" push -u "$PUSH_URL" "$PUSH_BRANCH"; then
   ok "推送成功: origin/$PUSH_BRANCH"
 else
   if [[ "$AUTH_MODE" == "https" ]]; then
-    warn "HTTPS 推送失败时，可尝试: git remote set-url origin $(to_ssh_url "$REMOTE_URL")"
+    warn "HTTPS 推送失败时，可尝试:"
+    warn "  git -c 'url.https://github.com/.insteadof=' push -u $(to_ssh_url "$REMOTE_URL") $PUSH_BRANCH"
   fi
   fail "推送失败"
 fi
