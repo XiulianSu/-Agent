@@ -36,6 +36,22 @@ python main.py
 
 在目标工作目录下运行；Agent 会将当前目录作为工作区。可选：在工作目录创建 `skills/<name>/SKILL.md` 以启用技能加载。
 
+## 安全上传到 GitHub
+
+上传前先确认四件事：**传哪个文件、传到哪个仓库、用什么认证、推到哪个分支**。
+
+```bash
+./gp-safe https://github.com/XiulianSu/-Agent.git .
+```
+
+`gp-safe` 会自动检查：是否为 git 仓库、远程 URL、HTTPS/SSH 认证、分支是否存在、历史是否分叉，并给出：
+
+- `✅ 可直接推送`
+- `⚠️ 远端已有分叉，建议推新分支`
+- `❌ 当前目录不是 git 仓库`
+
+可选安装到 PATH：`ln -sf "$(pwd)/gp-safe" ~/bin/gp-safe`
+
 ## 记忆系统规划
 
 1. **Layer 1（已实现）**：会话内按语义重要性打标，保留对任务要求有改进的 prompt

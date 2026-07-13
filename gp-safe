@@ -1,0 +1,209 @@
+#!/usr/bin/env bash
+# gp-safe — safe GitHub push with pre-flight checks
+# Usage: gp-safe <github-repo-url> <file-or-folder> [branch]
+#
+# Before pushing, answer four questions:
+#   1. What to upload (file or folder)
+#   2. Which repository (remote URL)
+#   3. Which auth (SSH recommended)
+#   4. Which branch (main or auto-fallback)
+
+set -euo pipefail
+
+RED='\033[31m'
+GREEN='\033[32m'
+YELLOW='\033[33m'
+CYAN='\033[36m'
+RESET='\033[0m'
+
+usage() {
+  cat <<'EOF'
+Usage: gp-safe <github-repo-url> <file-or-folder> [branch]
+
+Examples:
+  gp-safe https://github.com/user/repo.git .
+  gp-safe git@github.com:user/repo.git ./Agent main
+
+Pre-flight checks:
+  - Is the target directory a git repository?
+  - Does the remote URL match?
+  - HTTPS or SSH authentication?
+  - Current branch and remote branch state (empty / fast-forward / diverged)
+EOF
+}
+
+info()  { echo -e "${CYAN}$*${RESET}"; }
+ok()    { echo -e "${GREEN}✅ $*${RESET}"; }
+warn()  { echo -e "${YELLOW}⚠️  $*${RESET}"; }
+fail()  { echo -e "${RED}❌ $*${RESET}"; exit 1; }
+
+normalize_repo_url() {
+  local url="$1"
+  url="${url%.git}"
+  url="${url%/}"
+  echo "$url"
+}
+
+to_ssh_url() {
+  local url
+  url="$(normalize_repo_url "$1")"
+  case "$url" in
+    https://github.com/*)
+      echo "git@github.com:${url#https://github.com/}.git"
+      ;;
+    http://github.com/*)
+      echo "git@github.com:${url#http://github.com/}.git"
+      ;;
+    ssh://git@github.com/*)
+      echo "${url}.git"
+      ;;
+    git@github.com:*)
+      echo "${url}.git"
+      ;;
+    *)
+      echo "$1"
+      ;;
+  esac
+}
+
+repo_urls_match() {
+  local a b
+  a="$(normalize_repo_url "$1" | tr '[:upper:]' '[:lower:]')"
+  b="$(normalize_repo_url "$2" | tr '[:upper:]' '[:lower:]')"
+  a="${a#git@github.com:}"
+  a="${a#https://github.com/}"
+  b="${b#git@github.com:}"
+  b="${b#https://github.com/}"
+  [[ "$a" == "$b" ]]
+}
+
+if [[ $# -lt 2 ]]; then
+  usage
+  exit 1
+fi
+
+REPO_URL="$1"
+TARGET="$2"
+REQUESTED_BRANCH="${3:-}"
+
+if [[ ! -e "$TARGET" ]]; then
+  fail "路径不存在: $TARGET"
+fi
+
+if [[ -f "$TARGET" ]]; then
+  WORKDIR="$(cd "$(dirname "$TARGET")" && pwd)"
+else
+  WORKDIR="$(cd "$TARGET" && pwd)"
+fi
+
+info "═══ gp-safe 上传前检查 ═══"
+info "目标路径: $TARGET"
+info "工作目录: $WORKDIR"
+info "目标仓库: $REPO_URL"
+echo
+
+if ! git -C "$WORKDIR" rev-parse --git-dir >/dev/null 2>&1; then
+  fail "当前目录不是 git 仓库，需要指定已有仓库地址或在目标目录初始化后再推送"
+fi
+
+CURRENT_BRANCH="$(git -C "$WORKDIR" branch --show-current)"
+if [[ -z "$CURRENT_BRANCH" ]]; then
+  fail "当前处于 detached HEAD，请先 checkout 到具体分支"
+fi
+
+REMOTE_URL="$(git -C "$WORKDIR" remote get-url origin 2>/dev/null || true)"
+if [[ -z "$REMOTE_URL" ]]; then
+  warn "未配置 origin，将添加: $REPO_URL"
+  git -C "$WORKDIR" remote add origin "$REPO_URL"
+  REMOTE_URL="$REPO_URL"
+elif ! repo_urls_match "$REMOTE_URL" "$REPO_URL"; then
+  warn "origin 与目标仓库不一致"
+  info "  当前 origin: $REMOTE_URL"
+  info "  目标仓库:   $REPO_URL"
+  fail "请手动修正 remote 后再运行 gp-safe"
+else
+  ok "远程仓库匹配: $REMOTE_URL"
+fi
+
+AUTH_MODE="unknown"
+case "$REMOTE_URL" in
+  git@*|ssh://*)
+    AUTH_MODE="ssh"
+    ok "认证方式: SSH"
+    ;;
+  https://*|http://*)
+    AUTH_MODE="https"
+    SSH_URL="$(to_ssh_url "$REMOTE_URL")"
+    warn "认证方式: HTTPS（推送时可能需要 token）"
+    warn "建议改用 SSH: git remote set-url origin $SSH_URL"
+    ;;
+  *)
+    warn "认证方式: 未知 ($REMOTE_URL)"
+    ;;
+esac
+
+PUSH_BRANCH="${REQUESTED_BRANCH:-$CURRENT_BRANCH}"
+info "当前分支: $CURRENT_BRANCH"
+info "计划推送分支: $PUSH_BRANCH"
+
+if ! git -C "$WORKDIR" fetch origin --prune 2>/dev/null; then
+  warn "无法 fetch 远端（网络或认证问题），将仅依据本地缓存判断"
+fi
+
+REMOTE_REF="origin/$PUSH_BRANCH"
+STRATEGY="push"
+NEW_BRANCH=""
+
+if ! git -C "$WORKDIR" rev-parse --verify "$REMOTE_REF" >/dev/null 2>&1; then
+  ok "远端分支不存在或为空仓库 — 可直接推送 $PUSH_BRANCH"
+  STRATEGY="push_new"
+elif git -C "$WORKDIR" merge-base --is-ancestor "$REMOTE_REF" HEAD 2>/dev/null; then
+  ok "可直接推送（远端可快进合并）"
+  STRATEGY="fast_forward"
+elif git -C "$WORKDIR" merge-base --is-ancestor HEAD "$REMOTE_REF" 2>/dev/null; then
+  warn "本地落后远端，需要先 pull"
+  fail "请先 git pull --rebase origin $PUSH_BRANCH"
+else
+  NEW_BRANCH="${PUSH_BRANCH}-$(date +%Y%m%d-%H%M%S)"
+  warn "远端已有分叉历史，建议推新分支: $NEW_BRANCH"
+  STRATEGY="new_branch"
+  PUSH_BRANCH="$NEW_BRANCH"
+fi
+
+if [[ -n "$(git -C "$WORKDIR" status --porcelain)" ]]; then
+  warn "工作区有未提交改动，gp-safe 不会自动 commit"
+  git -C "$WORKDIR" status --short
+  fail "请先 commit 后再推送"
+fi
+
+echo
+info "═══ 检查结论 ═══"
+case "$STRATEGY" in
+  push_new|fast_forward)
+    ok "可直接推送 → origin/$PUSH_BRANCH"
+    ;;
+  new_branch)
+    warn "远端已有分叉，将推送到新分支 origin/$PUSH_BRANCH"
+    git -C "$WORKDIR" checkout -b "$PUSH_BRANCH"
+    ;;
+esac
+
+if [[ "${GP_SAFE_DRY_RUN:-}" == "1" ]]; then
+  info "[dry-run] 跳过实际 git push"
+  exit 0
+fi
+
+read -r -p "确认推送? [y/N] " CONFIRM
+if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
+  info "已取消"
+  exit 0
+fi
+
+if git -C "$WORKDIR" push -u origin "$PUSH_BRANCH"; then
+  ok "推送成功: origin/$PUSH_BRANCH"
+else
+  if [[ "$AUTH_MODE" == "https" ]]; then
+    warn "HTTPS 推送失败时，可尝试: git remote set-url origin $(to_ssh_url "$REMOTE_URL")"
+  fi
+  fail "推送失败"
+fi

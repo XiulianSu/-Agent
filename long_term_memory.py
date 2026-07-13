@@ -1,28 +1,32 @@
-```
-Persistent cross-session memory stored as Markdown files.
-```
+"""Persistent cross-session memory stored as Markdown files (WIP — not wired into main yet)."""
 
-from pathlib import path
+from __future__ import annotations
 
-MEMORY_DIR = Path.cwd() / ".memory" # 设置目录
-MEMORY_INDEX = MEMORY_DIR / "MEMORY.md" # 创建索引文件
-MEMORY_TYPES = {"user", "feedback", "project", "reference"} # 创建记忆分类
+from pathlib import Path
+
+MEMORY_DIR = Path.cwd() / ".memory"
+MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
+MEMORY_TYPES = frozenset({"user", "feedback", "project", "reference"})
+
 
 def configure_long_term_memory(memory_dir: Path) -> None:
     global MEMORY_DIR, MEMORY_INDEX
     MEMORY_DIR = memory_dir
     MEMORY_INDEX = MEMORY_DIR / "MEMORY.md"
-    MEMORY_DIR.mkdir(parents=True,exist_ok=True)
+    MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
-def _parse_frontmatter(text: str) -> tuple[dict[str,str],str]:
+
+def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     if not text.startswith("---"):
-        return {},text
+        return {}, text
 
-    parts = text.split("---",2)
-    if len(parts) <3:
-        return {},text
+    parts = text.split("---", 2)
+    if len(parts) < 3:
+        return {}, text
 
-    meta = {}
-    for line in pasrts[1].strip().split("\n"):
+    meta: dict[str, str] = {}
+    for line in parts[1].strip().split("\n"):
         if ":" in line:
-            key, value = line.split(":",1)
+            key, value = line.split(":", 1)
+            meta[key.strip()] = value.strip()
+    return meta, parts[2].strip()
