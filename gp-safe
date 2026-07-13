@@ -200,23 +200,23 @@ if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
 fi
 
 PUSH_URL="$REMOTE_URL"
+PUSH_ENV=()
 PUSH_EXTRA=()
-if [[ "$AUTH_MODE" == "https" ]]; then
+
+if git config --global --get-regexp '^url\..*\.insteadof' 2>/dev/null | grep -q 'git@github.com:'; then
   PUSH_URL="$(to_ssh_url "$REMOTE_URL")"
-  # 部分机器全局配置了 url.https://github.com/.insteadof git@github.com:
-  # 会强制把 SSH 改回 HTTPS，推送时需临时禁用
-  if git config --global --get-regexp '^url\..*\.insteadof' 2>/dev/null | grep -q 'git@github.com:'; then
-    PUSH_EXTRA=(-c 'url.https://github.com/.insteadof=')
-    info "检测到全局 HTTPS 重写规则，将用 SSH 直连推送"
-  fi
+  # 全局 url.https://github.com/.insteadof 会把 SSH 强制改回 HTTPS；
+  # 本机 git 上 -c 覆盖不可靠，推送时忽略 global 配置走纯 SSH。
+  PUSH_ENV=(env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1)
+  info "检测到全局 HTTPS 重写规则，将用 SSH 直连推送（忽略 global gitconfig）"
+elif [[ "$AUTH_MODE" == "https" ]]; then
+  warn "HTTPS 推送可能需 token；建议: git remote set-url origin $(to_ssh_url "$REMOTE_URL")"
 fi
 
-if git -C "$WORKDIR" "${PUSH_EXTRA[@]}" push -u "$PUSH_URL" "$PUSH_BRANCH"; then
-  ok "推送成功: origin/$PUSH_BRANCH"
+if "${PUSH_ENV[@]}" git -C "$WORKDIR" "${PUSH_EXTRA[@]}" push -u "$PUSH_URL" "$PUSH_BRANCH"; then
+  ok "推送成功: $PUSH_BRANCH → $(normalize_repo_url "$PUSH_URL")"
 else
-  if [[ "$AUTH_MODE" == "https" ]]; then
-    warn "HTTPS 推送失败时，可尝试:"
-    warn "  git -c 'url.https://github.com/.insteadof=' push -u $(to_ssh_url "$REMOTE_URL") $PUSH_BRANCH"
-  fi
+  warn "推送失败时可手动尝试:"
+  warn "  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 git push -u $(to_ssh_url "$REMOTE_URL") $PUSH_BRANCH"
   fail "推送失败"
 fi
